@@ -97,6 +97,14 @@ services:
       - minio
       - db
 
+  adminer:
+    image: adminer:4
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+
 volumes:
   minio-data:
   db-data:

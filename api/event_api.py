@@ -21,10 +21,21 @@ producer: AIOKafkaProducer | None = None
 
 
 async def startup_event():
-    # initialize kafka producer
+    """Initialize kafka producer with simple retries so API startup doesn't crash while Kafka boots/DNS settles."""
     global producer
-    producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap)
-    await producer.start()
+    attempts = 5
+    delay = 3
+    for i in range(1, attempts + 1):
+        try:
+            producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap)
+            await producer.start()
+            break
+        except Exception as exc:
+            producer = None
+            if i == attempts:
+                raise
+            print(f"[event_api] Kafka connect failed ({exc}); retrying in {delay}s ({i}/{attempts})")
+            await asyncio.sleep(delay)
 
 
 async def shutdown_event():
@@ -82,6 +93,7 @@ async def _process_ratings(job_id: str,  csv_row_number: int = 0):
             polled = await consumer.getmany(timeout_ms=10000, max_records=sent)
             for tp, msgs in polled.items():
                 for msg in msgs:
+                    print(msg.value)
                     records.append(json.loads(msg.value))
             await consumer.commit()
         finally:

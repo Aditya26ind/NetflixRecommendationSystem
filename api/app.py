@@ -84,10 +84,22 @@ async def startup_event():
     # --- Run DB insert + S3 upload concurrently ---
     await asyncio.gather(insert_movies(), upload_ratings())
 
-    # Start Kafka Producer for this module
-    producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap)
-    await producer.start()
-    print("Kafka producer started.")
+    # Start Kafka Producer for this module (with simple retries so we don't fail
+    # if Kafka is still booting or DNS is briefly unavailable)
+    attempts = 5
+    delay = 3
+    for i in range(1, attempts + 1):
+        try:
+            producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap)
+            await producer.start()
+            print("Kafka producer started.")
+            break
+        except Exception as exc:
+            producer = None
+            if i == attempts:
+                raise
+            print(f"Kafka connect failed ({exc}); retrying in {delay}s ({i}/{attempts})")
+            await asyncio.sleep(delay)
 
     # Also start the producer used inside event_api (so its routes work)
     await event_api.startup_event()
