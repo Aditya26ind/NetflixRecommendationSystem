@@ -56,3 +56,4 @@ Streaming:    Kafka
 Orchestration: Airflow (daily batch)
 AI:           OpenAI API
 APIs:         FastAPI
+DB UI:        Adminer (localhost:8081)

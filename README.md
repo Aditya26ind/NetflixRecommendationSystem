@@ -20,8 +20,8 @@ Ever wondered how Netflix knows exactly what you want to watch next? This projec
 
 ### The Tech Stack
 
-- **Postgres** - Stores movies, user preferences, and aggregated stats
-- **Kafka** - Handles the streaming event data (just like real-time systems)
+- **Postgres** - Stores movies, user preferences, and aggregated stats (browse via Adminer at `http://localhost:8081`)
+- **Kafka** - Handles the streaming event data (API startup now retries until Kafka is reachable)
 - **S3 (MinIO)** - Archives all the raw rating events (Mimics s3)
 - **Airflow** - Orchestrates the daily batch jobs
 - **Redis** - Caches recommendations so repeat requests are lightning fast
@@ -33,27 +33,34 @@ Ever wondered how Netflix knows exactly what you want to watch next? This projec
 
 **Redis Caching** - Generating recommendations involves database queries and AI calls, which can take a couple seconds. Once we compute recommendations for a user, Redis caches them. The next request? Milliseconds instead of seconds. The cache is smart too - it checks timestamps to make sure it's not serving stale data after aggregations update.
 
-**Common Utilities** - I got tired of writing the same connection logic everywhere, so I created reusable functions for Redis, Kafka, and Postgres connections. Now any part of the project can just import and use them.
+**Common Utilities** -  I created reusable functions for Redis, Kafka, and Postgres connections. Now any part of the project can just import and use them.
 
 **Migration Scripts** - Setting up the database schema is automated. Just run the migration script and all your tables are ready to go.
 
 ## The APIs
 
-### 1. `/ingest/ratings` - Event Ingestion
+### 1. `/event/rating` - Event Ingestion
 Simulates user rating events flowing through the system. Reads from CSV → pushes to Kafka → saves to S3.
 
-### 2. `/upload/movies` - Movie Catalog
-Loads the movie catalog into Postgres. This is your reference data - movie titles, genres, etc.
 
 ### 3. `/recommendations/{user_id}` - Get Recommendations
 The magic endpoint. Give it a user ID and get back 5 personalized movie picks based on their viewing history.
 
-## What's Next
+## Optimizing
 
-The data ingestion is  asynchronous,as huge amount of data leads to sever shutdown so moved the proccessing into background task.
+The data ingestion is  asynchronous,as huge amount of data leads to server shutdown so moved the proccessing into background task.
 
 ## Running It Locally
-You'll need Docker for Kafka, Postgres, Redis, and MinIO. Set up your `.env` with database credentials and an OpenAI API key. Run migrations to create tables, then hit the ingestion endpoints to populate data. Fire up Airflow to schedule the aggregation jobs, and you're ready to start serving recommendations.
+You'll need Docker for Kafka, Postgres, Redis, MinIO, Adminer, and the FastAPI app. Set up your `.env` with database credentials and an OpenAI API key. Run migrations to create tables, then hit the ingestion endpoints to populate data. Fire up Airflow to schedule the aggregation jobs, and you're ready to start serving recommendations.
 
-# run 
+Quick start:
+```bash
 docker compose up -d
+```
+
+Adminer (DB UI): open `http://localhost:8081` and connect with:
+- System: PostgreSQL
+- Server: `db`
+- User: `postgres`
+- Password: `password`
+- Database: `movie_recommendations`
