@@ -1,0 +1,1 @@
+### This is currently a placeholder since we are using the existing Kaggle dataset. As a result, there is no need to set up event creation or continuous data ingestion into Kafka. We are keeping it in place for potential future use.

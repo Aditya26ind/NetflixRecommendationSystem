@@ -1,0 +1,5 @@
+KAFKA_BOOTSTRAP = "kafka:9092"
+TOPIC_EVENTS = "user-events"
+TOPIC_DLQ = "user-events-dlq"
+PARTITIONS = 6
+RETENTION_HOURS = 168
