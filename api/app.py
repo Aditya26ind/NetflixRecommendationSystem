@@ -10,23 +10,24 @@ from . import event_api, recommendation_api
 from common.config import get_settings
 
 settings = get_settings()
+producer: AIOKafkaProducer | None = None  # local producer for this module
 
 app = FastAPI(title="Unified API", version="0.1.0")
 
 app.include_router(event_api.router)
 app.include_router(recommendation_api.router)
 
-app.add_event_handler("startup", event_api.startup_event)
-app.add_event_handler("shutdown", event_api.shutdown_event)
-
 async def startup_event():
+    """Seed DB + S3, then start Kafka producer (and event_api producer)."""
     global producer
 
     loop = asyncio.get_running_loop()
 
     # Load CSVs once
-    movie_path = Path(__file__).resolve().parent / "data" / "raw" / "movie.csv"
-    rating_path = Path(__file__).resolve().parent / "data" / "raw" / "rating.csv"
+    # data directory lives at /app/data/raw inside the image
+    data_root = Path(__file__).resolve().parent.parent / "data" / "raw"
+    movie_path = data_root / "movie.csv"
+    rating_path = data_root / "rating.csv"
 
     movie_df = pd.read_csv(movie_path)
 
@@ -58,11 +59,12 @@ async def startup_event():
     # ---  Upload rating.csv to S3 if not already there ---
     async def upload_ratings():
         client = get_s3_client()
+        bucket = ensure_bucket(client)
         s3_key = "raw/rating.csv"
         try:
             await loop.run_in_executor(
                 None,
-                lambda: client.head_object(Bucket=ensure_bucket(client), Key=s3_key)  # correct way to check existence
+                lambda: client.head_object(Bucket=bucket, Key=s3_key)  # correct way to check existence
             )
             print(f"{s3_key} already exists in S3, skipping upload.")
         except client.exceptions.ClientError:
@@ -71,26 +73,35 @@ async def startup_event():
                     None,
                     lambda: client.upload_file(
                         Filename=str(rating_path),
-                        Bucket=ensure_bucket(client),
+                        Bucket=bucket,
                         Key=s3_key
                     )
                 )
-                print(f"Uploaded {rating_path} to s3://{settings.s3_bucket}/{s3_key}")
+                print(f"Uploaded {rating_path} to s3://{bucket}/{s3_key}")
             else:
                 print("Local rating.csv not found, skipping upload.")
 
     # --- Run DB insert + S3 upload concurrently ---
     await asyncio.gather(insert_movies(), upload_ratings())
 
-    # Start Kafka Producer
+    # Start Kafka Producer for this module
     producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap)
     await producer.start()
     print("Kafka producer started.")
+
+    # Also start the producer used inside event_api (so its routes work)
+    await event_api.startup_event()
     
     
 async def shutdown_event():
     if producer:
         await producer.stop()
+    # stop producer managed by event_api
+    await event_api.shutdown_event()
+
+# attach lifecycle handlers (our own wrapper also calls event_api's)
+app.add_event_handler("startup", startup_event)
+app.add_event_handler("shutdown", shutdown_event)
 
 @app.get("/health")
 async def health():

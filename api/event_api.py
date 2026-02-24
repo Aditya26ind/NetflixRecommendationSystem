@@ -20,6 +20,19 @@ ingest_status: dict[str, dict] = {}
 producer: AIOKafkaProducer | None = None
 
 
+async def startup_event():
+    # initialize kafka producer
+    global producer
+    producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap)
+    await producer.start()
+
+
+async def shutdown_event():
+    global producer
+    if producer:
+        await producer.stop()
+
+
 
 # backgound task to read CSV, send to Kafka, consume back, and save to S3
 async def _process_ratings(job_id: str,  csv_row_number: int = 0):

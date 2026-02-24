@@ -1,6 +1,8 @@
+import io
 import json
 import asyncio
 from common.redis_client import get_redis_client
+from common.s3_client import ensure_bucket, get_s3_client
 from fastapi import APIRouter, HTTPException
 from openai import OpenAI
 
@@ -19,6 +21,7 @@ async def get_recommendations(user_id: int):
     redis_client = get_redis_client()
     db = get_db_connection()
     cursor = db.cursor()
+
     
     # Get user's top movies from aggregates
     cursor.execute(
@@ -32,7 +35,8 @@ async def get_recommendations(user_id: int):
         raise HTTPException(status_code=404, detail="User not found")
     
     top_movies = result[0]
-    db_updated_at = int(result[1].timestamp())
+    # Some DBs may not store an updated_at column; fall back to current time.
+    db_updated_at = int(result[1].timestamp()) if len(result) > 1 else int(asyncio.get_event_loop().time())
     
     # Check cache with timestamp validation
     cache_key = f"recs:{user_id}"
