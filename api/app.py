@@ -61,25 +61,43 @@ async def startup_event():
         client = get_s3_client()
         bucket = ensure_bucket(client)
         s3_key = "raw/rating.csv"
+        
         try:
-            await loop.run_in_executor(
-                None,
-                lambda: client.head_object(Bucket=bucket, Key=s3_key)  # correct way to check existence
-            )
-            print(f"{s3_key} already exists in S3, skipping upload.")
-        except client.exceptions.ClientError:
-            if rating_path.exists():
-                await loop.run_in_executor(
-                    None,
-                    lambda: client.upload_file(
-                        Filename=str(rating_path),
-                        Bucket=bucket,
-                        Key=s3_key
-                    )
+            # Try to fetch the file
+            obj = client.get_object(Bucket=bucket, Key=s3_key)
+            body = obj["Body"].read()
+
+            if not body.strip():
+                # File exists but is empty
+                print(f"{s3_key} is empty. Uploading data...")
+
+                data = rating_path.read_bytes()
+                client.put_object(
+                    Bucket=bucket,
+                    Key=s3_key,
+                    Body=data.encode("utf-8")
                 )
-                print(f"Uploaded {rating_path} to s3://{bucket}/{s3_key}")
             else:
-                print("Local rating.csv not found, skipping upload.")
+                print(f"{s3_key} already has data. Skipping upload.")
+
+        except client.exceptions.NoSuchKey:
+            # File does not exist
+            print(f"{s3_key} not found. Creating new file and uploading data...")
+
+            data = rating_path.read_bytes()
+            client.put_object(
+                Bucket=bucket,
+                Key=s3_key,
+                Body=data.encode("utf-8"),
+
+            )
+
+        except Exception as e:
+            print(f"Error checking/uploading {s3_key}: {e}")
+
+        else:
+            print("Upload check complete.")
+        
 
     # --- Run DB insert + S3 upload concurrently ---
     await asyncio.gather(insert_movies(), upload_ratings())
