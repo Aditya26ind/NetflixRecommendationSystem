@@ -71,5 +71,5 @@ def test_ingest_status_route_404():
 
 def test_recommendations_route():
     res = client.get("/recommendations/1")
-    # Without data or OpenAI key, we may get 404/500; route must exist
+    # Without data or OpenAI key, we may get 404/500;
     assert res.status_code in (200, 404, 500)
