@@ -20,26 +20,22 @@ ingest_status: dict[str, dict] = {}
 producer: AIOKafkaProducer | None = None
 
 
-async def startup_event():
-    global producer
-    producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap)
-    await producer.start()
-async def shutdown_event():
-    if producer:
-        await producer.stop()
-
 
 # backgound task to read CSV, send to Kafka, consume back, and save to S3
-async def _process_ratings(job_id: str, limit: int):
+async def _process_ratings(job_id: str,  csv_row_number: int = 0):
     ingest_status[job_id] = {"status": "running", "sent": 0, "s3_key": None, "error": None}
     try:
-        path = Path("data/raw/rating.csv")
-        if not path.exists():
-            raise FileNotFoundError("rating.csv not found")
-        if producer is None:
-            raise RuntimeError("Kafka not ready")
+        s3_client = get_s3_client()
 
-        df = await asyncio.to_thread(pd.read_csv, path, nrows=limit)
+        buffer = io.BytesIO()
+        s3_client.download_fileobj(ensure_bucket(s3_client), "raw/rating.csv", buffer)
+        buffer.seek(0)
+        
+        df = pd.read_csv(
+            buffer,
+            skiprows=range(1, csv_row_number + 1),  
+            nrows=1                                   
+        )
         df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") // 10**6
 
         events = [
@@ -57,6 +53,7 @@ async def _process_ratings(job_id: str, limit: int):
         tasks = [producer.send(settings.kafka_topic, json.dumps(event).encode()) for event in events]
         await asyncio.gather(*tasks)
         sent = len(events)
+        ingest_status[job_id]["sent"] = sent
 
         # Consume from Kafka (limited to sent records)
         consumer = AIOKafkaConsumer(
@@ -73,74 +70,46 @@ async def _process_ratings(job_id: str, limit: int):
             for tp, msgs in polled.items():
                 for msg in msgs:
                     records.append(json.loads(msg.value))
+            await consumer.commit()
         finally:
             await consumer.stop()
 
-        # Save to S3
-        buffer = io.BytesIO()
-        for record in records:
-            buffer.write(json.dumps(record).encode() + b"\n")
-        buffer.seek(0)
+        if not records:
+            raise ValueError("No records consumed from Kafka")
 
-        s3_client = get_s3_client()
-        bucket = ensure_bucket(s3_client)
-        key = f"raw/ratings-{int(time.time())}-{sent}.jsonl"
+        # Convert consumed records back to DataFrame
+        consumed_df = pd.DataFrame(records)
+
+        # Download existing rating.csv from S3
+        existing_buffer = io.BytesIO()
+        s3_client.download_fileobj(ensure_bucket(s3_client), "raw/rating.csv", existing_buffer)
+        existing_buffer.seek(0)
+        existing_df = pd.read_csv(existing_buffer)
+
+        # Append new data
+        merged_df = pd.concat([existing_df, consumed_df], ignore_index=True)
+
+        # Upload back to S3 (overwrite rating.csv)
+        out_buffer = io.BytesIO()
+        merged_df.to_csv(out_buffer, index=False)
+        out_buffer.seek(0)
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, s3_client.upload_fileobj, buffer, bucket, key)
+        await loop.run_in_executor(None, s3_client.upload_fileobj, out_buffer, ensure_bucket(s3_client), "raw/rating.csv")
 
-        ingest_status[job_id] = {"status": "success", "sent": sent, "s3_key": key, "error": None}
+        ingest_status[job_id] = {"status": "success", "sent": sent, "s3_key": "raw/rating.csv", "error": None}
+
     except Exception as exc:
         ingest_status[job_id] = {"status": "failed", "sent": 0, "s3_key": None, "error": str(exc)}
 
 
-@router.post("/ingest/ratings")
-async def ingest_ratings(limit: int = 5000, background_tasks: BackgroundTasks = None):
+@router.post("/event/rating")
+async def ingest_ratings(csv_row_number=0, background_tasks: BackgroundTasks = None):
     """Kick off background ingestion of rating.csv (default first 5000 rows)."""
     job_id = str(uuid.uuid4())
     ingest_status[job_id] = {"status": "queued", "sent": 0, "s3_key": None, "error": None}
     if background_tasks is not None:
-        background_tasks.add_task(_process_ratings, job_id, limit)
+        background_tasks.add_task(_process_ratings, job_id, csv_row_number)
     else:
-        asyncio.create_task(_process_ratings(job_id, limit))
+        asyncio.create_task(_process_ratings(job_id, csv_row_number))
     return {"job_id": job_id, "status": "queued"}
-
-
-@router.get("/ingest/ratings/{job_id}")
-async def ingest_status_check(job_id: str):
-    status = ingest_status.get(job_id)
-    if not status:
-        raise HTTPException(status_code=404, detail="job_id not found")
-    return status
-
-
-@router.post("/upload/movies")
-async def upload_movies():
-    """Load movies.csv into Postgres"""
-    path = Path("data/raw/movie.csv")
-
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="movie.csv not found")
-    
-    df = pd.read_csv(path)
-    
-    db = get_db_connection()
-    cursor = db.cursor()
-    
-    records = [
-        (int(row["movieId"]), str(row["title"]), str(row["genres"]))
-        for _, row in df.iterrows()
-    ]
-    cursor.executemany(
-        """
-        INSERT INTO movies (movie_id, title, genres)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (movie_id) DO UPDATE SET title = EXCLUDED.title, genres = EXCLUDED.genres
-        """,
-        records,
-    )
-    
-    db.commit()
-    cursor.close()
-
-    return {"status": "ok", "movies_inserted": len(df)}
